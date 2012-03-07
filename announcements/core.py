@@ -56,6 +56,7 @@ import types
 import inspect
 import threading
 import weakref
+import sys
 
 
 class AnnouncementMeta(type):
@@ -148,10 +149,12 @@ class Announcer(object):
     def __init__(self):
         super(Announcer, self).__init__()
         self.registry = SubscriptionRegistry()
+        self.ignored_exceptions = []
 
     def announce(self, announcement):
         announcement = announcement.asAnnouncement(announcement)
         if self.registry:
+            self.registry.ignored_exceptions = tuple(self.ignored_exceptions)
             self.registry.deliver(announcement)
         return announcement
 
@@ -347,6 +350,7 @@ class SubscriptionRegistry(object):
         super(SubscriptionRegistry, self).__init__()
         self.subscriptions = set()
         self.lock = lock or threading.Lock()
+        self.ignored_exceptions = []
 
     def __len__(self):
         return len(self.subscriptions)
@@ -386,21 +390,24 @@ class SubscriptionRegistry(object):
     def deliver(self, announcement):
         with self.protected():
             subscriptions = list(self.subscriptions)
-        self.deliverTo(announcement, subscriptions)
+        self.deliverTo(announcement, subscriptions, self.ignored_exceptions)
 
-    def deliverTo(self, announcement, subscriptions):
+    def deliverTo(self, announcement, subscriptions, exceptions_that_are_ok):
         """Ensure all the subscriptions are delivered even if some fail. If an
         exception is raised, catch it, continue delivering messages and only when
-        all the messages are delivered re-raise with the original context.
+        all the messages are delivered re-raise in the original context.
 
         """
-        #XXX there is no tco
+        excep = None
         for index, subscription in enumerate(subscriptions):
             try:
                 subscription.deliver(announcement)
-            except:
-                self.deliverTo(announcement, subscriptions[index+1:])
-                raise
+            except Exception, err:
+                if not isinstance(err, exceptions_that_are_ok):
+                    excep = sys.exc_info()
+
+        if excep is not None:
+            raise excep[0], excep[1], excep[2]
 
     def subscriptionsOf(self, subscriber, do):
         with self.protected():
